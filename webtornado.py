@@ -114,16 +114,17 @@ def runtornado(func, port):
             
         get = post = put = delete = delegate
 
-    settings = {
-        "static_path": "static"
-    }
     application = tornado.web.Application([
+        (r"/static/(.*)", tornado.web.StaticFileHandler, {"path": "static"}),
         (r"/.*", MainHandler),
-    ], **settings)
+    ])
     if isinstance(port, tuple):
         _, port = port
     port = int(port)
-
+    
+    logging.getLogger().setLevel(logging.INFO)
+    tornado.options.enable_pretty_logging()
+    
     http_server = tornado.httpserver.HTTPServer(application)
     http_server.listen(port)
     print 'http://0.0.0.0:%d' % port
