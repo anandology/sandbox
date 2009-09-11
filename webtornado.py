@@ -69,11 +69,11 @@ def make_wsgi_environ(request):
     special = ['CONTENT_LENGTH', 'CONTENT_TYPE']
     
     for k, v in request.headers.items():
-        k =  k.upper().replace('_', '-')
+        k =  k.upper().replace('-', '_')
         if k not in special:
             k = 'HTTP_' + k
         env[k] = v
-
+        
     env["wsgi.url_scheme"] = request.protocol
     env['REMOTE_ADDR'] = request.remote_ip
     env['HTTP_HOST'] = request.host
@@ -98,13 +98,16 @@ def runtornado(func, port):
         def delegate(self):
             get_ioloop().setup_local()
             env = make_wsgi_environ(self.request)
+
             out = func(env, self._start_response)
             
             if not hasattr(out, 'next'):
                 out = [out]
-                
-            for x in out:
-                self.write(web.safestr(x))
+            
+            # don't send any data for redirects
+            if self._status_code not in [301, 302, 303, 304, 307]:
+                for x in out:
+                    self.write(web.safestr(x))
 
         def _start_response(self, status, headers):
             status_code = int(status.split()[0])
