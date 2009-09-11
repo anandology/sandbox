@@ -1,6 +1,13 @@
 """Adapter to run web.py applications using tornado web server.
 
 http://www.tornadoweb.org/
+
+To make you web.py application run with tornado web server, add the following code to your application.
+
+    import webtornado
+    import web
+    web.httpserver.runsimple = webtornado.runtornado
+
 """
 import tornado.ioloop
 import tornado.options
