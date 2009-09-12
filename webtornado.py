@@ -1,13 +1,6 @@
-"""Adapter to run web.py applications using tornado web server.
+"""Python module to run WSGI applications using tornado web server.
 
 http://www.tornadoweb.org/
-
-To make you web.py application run with tornado web server, add the following code to your application.
-
-    import webtornado
-    import web
-    web.httpserver.runsimple = webtornado.runtornado
-
 """
 import tornado.ioloop
 import tornado.options
@@ -17,118 +10,155 @@ import logging
 
 import sys
 import urllib
-import web
 from cStringIO import StringIO
 
+class SocketThread:
+    """In Tornado http server, the stream of execution are associated with sockets. 
+    This class provides thread like interface for those streams of execution.
+    """
+    def __init__(self, fd, parent):
+        self.fd = fd
+        self.parent = parent
+        self.local = None
+
+    def get_local(self):
+        if self.local is not None:
+            return self.local
+        else:
+            return self.parent and self.parent.get_local()
+
+    @staticmethod
+    def get_current_thread():
+        return tornado.ioloop.IOLoop().instance().active_thread
+
 class IOLoop(tornado.ioloop.IOLoop):
+    """IOLoop extension to support SocketThreads."""
     def __init__(self, impl=None):
-        self.current_fd = None
-        self.tree = {}
-        self._local = {}
+        self.threads = {}
+        self.active_thread = None
         tornado.ioloop.IOLoop.__init__(self, impl)
 
     def add_handler(self, fd, handler, events):
         def xhandler(_fd, _events):
-            self.current_fd = _fd
+            self.active_thread = self.threads[_fd]
             return handler(_fd, _events)
             
-        tree = self.tree.get(self.current_fd, [])
-        if self.current_fd:
-            tree = [self.current_fd] + tree
-        self.tree[fd] = [fd] + tree
-            
+        self.threads[fd] = SocketThread(fd, self.active_thread)
         tornado.ioloop.IOLoop.add_handler(self, fd, xhandler, events)
 
     def remove_handler(self, fd):
         tornado.ioloop.IOLoop.remove_handler(self, fd)
-        del self.tree[fd]
-        self._local.pop(fd, None)
-        
-    def get_tree(self):
-        return self.tree[self.current_fd]
-        
-    def get_local(self):
-        for fd in self.get_tree():
-            if fd in self._local:
-                return self._local[fd]
+        del self.threads[fd]
+
+tornado.ioloop.IOLoop._instance = IOLoop()
                 
-    def setup_local(self):
-        self._local[self.current_fd] = web.storage()
+class WSGIHandler(tornado.web.RequestHandler):
+    """WSGI Handler for Tornado."""
+    def __init__(self, application, request, wsgi_app):
+        self.wsgi_app = wsgi_app
+        tornado.web.RequestHandler.__init__(self, application, request)
 
-def get_ioloop():
-    return tornado.ioloop.IOLoop.instance()
-    
-def make_wsgi_environ(request):
-    """Makes wsgi environment using Tornado HTTPRequest"""
-    env = {}
-    env['REQUEST_METHOD'] = request.method
-    env['SCRIPT_NAME'] = ""
-    env['PATH_INFO'] = urllib.unquote(request.path)
-    env['QUERY_STRING'] = request.query
-    
-    special = ['CONTENT_LENGTH', 'CONTENT_TYPE']
-    
-    for k, v in request.headers.items():
-        k =  k.upper().replace('-', '_')
-        if k not in special:
-            k = 'HTTP_' + k
-        env[k] = v
+    def delegate(self):
+        env = self.make_wsgi_environ(self.request)
+        out = self.wsgi_app(env, self._start_response)
         
-    env["wsgi.url_scheme"] = request.protocol
-    env['REMOTE_ADDR'] = request.remote_ip
-    env['HTTP_HOST'] = request.host
-    env['SERVER_PROTOCOL'] = request.version
-    
-    if request.body:
-        env['wsgi.input'] = StringIO(request.body)
+        if not (hasattr(out, 'next') or isinstance(out, list)):
+            out = [out]
         
-    env['wsgi.errors'] = sys.stdout    
-    env['wsgi.multithread'] = False
-    env['wsgi.multiprocess'] = False
-    env['wsgi.run_once'] = False
+        # don't send any data for redirects
+        if self._status_code not in [301, 302, 303, 304, 307]:
+            for x in out:
+                self.write(x)
+
+    get = post = put = delete = delegate
+
+    def _start_response(self, status, headers):
+        status_code = int(status.split()[0])
+        self.set_status(status_code)
+        for name, value in headers:
+            self.set_header(name, value)
+
+    def make_wsgi_environ(self, request):
+        """Makes wsgi environment using Tornado HTTPRequest"""
+        env = {}
+        env['REQUEST_METHOD'] = request.method
+        env['SCRIPT_NAME'] = ""
+        env['PATH_INFO'] = urllib.unquote(request.path)
+        env['QUERY_STRING'] = request.query
         
-    return env
-
-def runtornado(func, port):
-    """Run wsgi func using tornado http server."""
-    tornado.ioloop.IOLoop._instance = IOLoop()
-    web.utils.ThreadedDict._getd = get_ioloop().get_local
-
-    class MainHandler(tornado.web.RequestHandler):
-        def delegate(self):
-            get_ioloop().setup_local()
-            env = make_wsgi_environ(self.request)
-
-            out = func(env, self._start_response)
+        special = ['CONTENT_LENGTH', 'CONTENT_TYPE']
+        
+        for k, v in request.headers.items():
+            k =  k.upper().replace('-', '_')
+            if k not in special:
+                k = 'HTTP_' + k
+            env[k] = v
             
-            if not hasattr(out, 'next'):
-                out = [out]
+        env["wsgi.url_scheme"] = request.protocol
+        env['REMOTE_ADDR'] = request.remote_ip
+        env['HTTP_HOST'] = request.host
+        env['SERVER_PROTOCOL'] = request.version
+        
+        if request.body:
+            env['wsgi.input'] = StringIO(request.body)
             
-            # don't send any data for redirects
-            if self._status_code not in [301, 302, 303, 304, 307]:
-                for x in out:
-                    self.write(web.safestr(x))
-
-        def _start_response(self, status, headers):
-            status_code = int(status.split()[0])
-            self.set_status(status_code)
-            for name, value in headers:
-                self.set_header(name, value)
+        env['wsgi.errors'] = sys.stdout    
+        env['wsgi.multithread'] = False
+        env['wsgi.multiprocess'] = False
+        env['wsgi.run_once'] = False
             
-        get = post = put = delete = delegate
+        return env
 
-    application = tornado.web.Application([
-        (r"/static/(.*)", tornado.web.StaticFileHandler, {"path": "static"}),
-        (r"/.*", MainHandler),
-    ])
-    if isinstance(port, tuple):
-        _, port = port
-    port = int(port)
-    
+class WSGIServer(tornado.httpserver.HTTPServer):
+    """Tornado HTTP Server to work with wsgi applications."""
+    def __init__(self, wsgi_app):
+        application = tornado.web.Application([
+            (r"/static/(.*)", tornado.web.StaticFileHandler, {"path": "static"}),
+            (r"/.*", WSGIHandler, {'wsgi_app': wsgi_app}),
+        ])
+        tornado.httpserver.HTTPServer.__init__(self, application)
+
+class SocketLocalMiddle:
+    """WSGI middleware to setup socket-local for request handling socket-thread."""
+    def __init__(self, wsgi_app):
+        self.wsgi_app = wsgi_app
+
+    def __call__(self, env, start_response):
+        SocketThread.get_current_thread().local = {}
+        return self.wsgi_app(env, start_response)
+
+def start(wsgi_app, port):
+    """Starts Tornado HTTP Server on specified port with the specified wsgi_app."""
+    # setup socket-local for request hanling socket-thread
+    wsgi_app = SocketLocalMiddle(wsgi_app)
+
+    # enable pretty logging
     logging.getLogger().setLevel(logging.INFO)
     tornado.options.enable_pretty_logging()
     
-    http_server = tornado.httpserver.HTTPServer(application)
+    # start the server
+    http_server = WSGIServer(wsgi_app)
     http_server.listen(port)
     print 'http://0.0.0.0:%d' % port
     tornado.ioloop.IOLoop.instance().start()
+
+def start_webpy(wsgi_app, port):
+    """This should go into web.py"""
+    if isinstance(port, tuple):
+        _, port = port
+    port = int(port)
+
+    import web
+
+    # monkey-patch web.ThreadedDict
+    class ThreadedDict(web.ThreadedDict):
+        def getd(self):
+            local = SocketThread.get_current_thread().get_local()
+            if self not in local:
+                local[self] = web.storage()
+            return local[self]
+
+    web.ThreadedDict = web.threadeddict = web.utils.ThreadedDict = web.utils.threadeddict = ThreadedDict
+    start(wsgi_app, port)
+
+runtornado = start_webpy
