@@ -52,7 +52,9 @@ class AbstractAdapter:
         elif option == 'default':
             if hasattr(value, 'sql'):
                 value = value.sql(self)
-            return 'default %s' % (value)
+            else:
+                value = sqlrepr(value)
+            return "default %s" % (value)
         elif option == 'null':
             return {True: 'null', False: 'not null'}[value]
         elif option == 'references':
@@ -140,17 +142,23 @@ class SQLiteAdapter(AbstractAdapter):
         'boolean': 'boolean'
     }
     constants = {
-        'CURRENT_TIMESTAMP': "datetime('now')",
-        'CURRENT_DATE': "date('now')",
-        'CURRENT_TIME': "time('now')",
-        'CURRENT_UTC_TIMESTAMP': "datetime('now', 'utc')",
-        'CURRENT_UTC_DATE': "date('now', 'utc')",
-        'CURRENT_UTC_TIME': "time('now', 'utc')",
+        'CURRENT_TIMESTAMP': "CURRENT_TIMESTAMP",
+        'CURRENT_DATE': "CURRENT_DATE",
+        'CURRENT_TIME': "CURRENT_TIME",
+        'CURRENT_UTC_TIMESTAMP': "CURRENT_TIMESTAMP",
+        'CURRENT_UTC_DATE': "CURRENT_DATE",
+        'CURRENT_UTC_TIME': "CURRENT_TIME",
     }
 
 register_adapter('mysql', MySQLAdapter)
 register_adapter('postgres', PostgresAdapter)
 register_adapter('sqlite', SQLiteAdapter)
+
+def sqlrepr(s):
+    if isinstance(s, str):
+        return repr(s)
+    else:
+        return s
 
 class Datatype:
     def __init__(self, name=None):
