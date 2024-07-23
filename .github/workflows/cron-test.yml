@@ -1,0 +1,32 @@
+name: Workflow to test cron
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  crontest:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Update log file
+      run: |
+        echo "`date` -- started workflow from cron"  >> cron.log
+        sleep 1
+        echo "`date` -- completed workflow from cron"  >> cron.log
+
+
+    - name: Commit and push changes
+      run: |
+        git config --global user.name 'github-actions'
+        git config --global user.email 'github-actions@github.com'
+        git add cron.log
+        git commit -m 'Updated the cron workflow log'
+        git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
